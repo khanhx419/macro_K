@@ -103,6 +103,16 @@ void HookManager::clearIgnoredKeys() {
     m_ignoredKeys.clear();
 }
 
+void HookManager::setSettings(const MacroSettings& settings) {
+    std::lock_guard<std::mutex> lock(m_eventMutex);
+    m_settings = settings;
+}
+
+MacroSettings HookManager::getSettings() const {
+    std::lock_guard<std::mutex> lock(m_eventMutex);
+    return m_settings;
+}
+
 bool HookManager::startRecording(const MacroSettings& settings) {
     if (!m_initialized.load()) {
         if (!init()) return false;
@@ -110,8 +120,11 @@ bool HookManager::startRecording(const MacroSettings& settings) {
 
     if (m_isRecording.load()) return false;
 
-    m_settings = settings;
-    clearEvents();
+    {
+        std::lock_guard<std::mutex> lock(m_eventMutex);
+        m_settings = settings;
+        m_events.clear();
+    }
 
     // Query current cursor position so initial stationary state is not recorded as a move!
     POINT curPos;
@@ -125,6 +138,10 @@ bool HookManager::startRecording(const MacroSettings& settings) {
 
     m_lastEventTimeMs = 0;
     m_lastMouseMoveTimeMs = 0;
+
+    // If left mouse button is currently held down (e.g. user clicked GUI 'Start' button),
+    // ignore the upcoming MouseUp release so the button click is not captured into the macro!
+    m_ignoreInitialMouseUp.store((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0);
 
     m_timer.start();
     m_isRecording.store(true);
@@ -221,6 +238,12 @@ LRESULT CALLBACK HookManager::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPA
 
 void HookManager::handleMouseEvent(WPARAM wParam, const MSLLHOOKSTRUCT* pMouse) {
     if (!m_settings.recordMouse) return;
+
+    if (wParam == WM_LBUTTONUP && m_ignoreInitialMouseUp.load()) {
+        m_ignoreInitialMouseUp.store(false);
+        return;
+    }
+    m_ignoreInitialMouseUp.store(false);
 
     uint64_t currentMs = m_timer.getElapsedMs();
     uint32_t delay = static_cast<uint32_t>(currentMs - m_lastEventTimeMs);

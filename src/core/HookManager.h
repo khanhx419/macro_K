@@ -34,6 +34,9 @@ public:
     void setEventCallback(EventCallback cb) { m_eventCallback = cb; }
     void setHotkeyCallback(HotkeyCallback cb) { m_hotkeyCallback = cb; }
 
+    void setSettings(const MacroSettings& settings);
+    MacroSettings getSettings() const;
+
     void addIgnoredKey(uint32_t vkCode);
     void setIgnoredKeys(const std::vector<uint32_t>& keys);
     void clearIgnoredKeys();
@@ -50,6 +53,7 @@ private:
 
     std::atomic<bool> m_initialized{false};
     std::atomic<bool> m_isRecording{false};
+    std::atomic<bool> m_ignoreInitialMouseUp{false};
     std::thread m_hookThread;
     DWORD m_hookThreadId{0};
     HHOOK m_mouseHook{nullptr};

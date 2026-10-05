@@ -49,6 +49,27 @@ void MacroPlayer::playbackWorker(std::vector<MacroEvent> events, MacroSettings s
 
             const auto& evt = events[i];
 
+            // Filter out events that the user has disabled in settings
+            bool isMouseAction = (evt.type == EventType::MouseMove ||
+                                  evt.type == EventType::MouseDown ||
+                                  evt.type == EventType::MouseUp ||
+                                  evt.type == EventType::MouseWheel ||
+                                  evt.type == EventType::MouseHWheel);
+
+            if (!settings.recordMouse && isMouseAction) {
+                // If user disabled mouse, skip all mouse playback
+                continue;
+            }
+            if (!settings.recordMouseMoves && evt.type == EventType::MouseMove) {
+                // If user disabled mouse movement, skip trajectory playback
+                continue;
+            }
+            bool isKeyboardAction = (evt.type == EventType::KeyDown || evt.type == EventType::KeyUp);
+            if (!settings.recordKeyboard && isKeyboardAction) {
+                // If user disabled keyboard, skip keyboard playback
+                continue;
+            }
+
             // Calculate scaled delay
             uint32_t scaledDelay = evt.delayMs;
             if (settings.speedMultiplier > 0.001) {
@@ -62,7 +83,7 @@ void MacroPlayer::playbackWorker(std::vector<MacroEvent> events, MacroSettings s
             }
 
             // Execute the action
-            executeEvent(evt);
+            executeEvent(evt, settings);
 
             if (m_progressCallback) {
                 m_progressCallback(i + 1, total, currentLoop, settings.loopCount);
@@ -89,7 +110,7 @@ void MacroPlayer::playbackWorker(std::vector<MacroEvent> events, MacroSettings s
     }
 }
 
-void MacroPlayer::executeEvent(const MacroEvent& evt) {
+void MacroPlayer::executeEvent(const MacroEvent& evt, const MacroSettings& settings) {
     INPUT input{};
 
     int vLeft = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -110,6 +131,7 @@ void MacroPlayer::executeEvent(const MacroEvent& evt) {
 
     switch (evt.type) {
         case EventType::MouseMove: {
+            if (!settings.recordMouse || !settings.recordMouseMoves) return;
             SetCursorPos(evt.x, evt.y);
             input.type = INPUT_MOUSE;
             input.mi.dx = toNormalizedX(evt.x);
@@ -120,10 +142,14 @@ void MacroPlayer::executeEvent(const MacroEvent& evt) {
         }
         case EventType::MouseDown:
         case EventType::MouseUp: {
-            SetCursorPos(evt.x, evt.y);
+            if (!settings.recordMouse) return;
+
             input.type = INPUT_MOUSE;
-            input.mi.dx = toNormalizedX(evt.x);
-            input.mi.dy = toNormalizedY(evt.y);
+            if (settings.recordMouseMoves) {
+                SetCursorPos(evt.x, evt.y);
+                input.mi.dx = toNormalizedX(evt.x);
+                input.mi.dy = toNormalizedY(evt.y);
+            }
 
             DWORD baseFlag = (evt.type == EventType::MouseDown) ? 0 : 1; // 0=Down, 1=Up
 
@@ -149,11 +175,14 @@ void MacroPlayer::executeEvent(const MacroEvent& evt) {
                     return;
             }
 
-            input.mi.dwFlags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+            if (settings.recordMouseMoves) {
+                input.mi.dwFlags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+            }
             SendInput(1, &input, sizeof(INPUT));
             break;
         }
         case EventType::MouseWheel: {
+            if (!settings.recordMouse) return;
             input.type = INPUT_MOUSE;
             input.mi.dwFlags = MOUSEEVENTF_WHEEL;
             input.mi.mouseData = static_cast<DWORD>(evt.wheelDelta);
@@ -161,6 +190,7 @@ void MacroPlayer::executeEvent(const MacroEvent& evt) {
             break;
         }
         case EventType::MouseHWheel: {
+            if (!settings.recordMouse) return;
             input.type = INPUT_MOUSE;
             input.mi.dwFlags = MOUSEEVENTF_HWHEEL;
             input.mi.mouseData = static_cast<DWORD>(evt.wheelDelta);
@@ -169,6 +199,7 @@ void MacroPlayer::executeEvent(const MacroEvent& evt) {
         }
         case EventType::KeyDown:
         case EventType::KeyUp: {
+            if (!settings.recordKeyboard) return;
             input.type = INPUT_KEYBOARD;
             input.ki.wVk = static_cast<WORD>(evt.vkCode);
             input.ki.wScan = static_cast<WORD>(evt.scanCode);

@@ -206,7 +206,7 @@ static void SyncSettingsFromUI() {
     // Recording source checkboxes
     g_settings.recordKeyboard = (SendMessage(g_hChkKeyboard, BM_GETCHECK, 0, 0) == BST_CHECKED);
     g_settings.recordMouse = (SendMessage(g_hChkMouse, BM_GETCHECK, 0, 0) == BST_CHECKED);
-    g_settings.recordMouseMoves = (SendMessage(g_hChkMouseMove, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    g_settings.recordMouseMoves = g_settings.recordMouse && (SendMessage(g_hChkMouseMove, BM_GETCHECK, 0, 0) == BST_CHECKED);
 
     // If mouse is unchecked, disable mouse moves checkbox visually
     EnableWindow(g_hChkMouseMove, g_settings.recordMouse ? TRUE : FALSE);
@@ -227,7 +227,8 @@ static void SyncSettingsFromUI() {
         g_settings.hotkeyStop = kAvailableHotkeys[idxStop].vkCode;
     }
 
-    // Update HookManager ignored keys
+    // Immediately synchronize settings and ignored keys with HookManager
+    g_hookManager.setSettings(g_settings);
     g_hookManager.setIgnoredKeys({g_settings.hotkeyRecord, g_settings.hotkeyPlay, g_settings.hotkeyStop});
 }
 
@@ -398,6 +399,22 @@ static void OnToggleRecord() {
         g_hookManager.startRecording(g_settings);
     } else {
         g_hookManager.stopRecording();
+        const auto& evts = g_hookManager.getRecordedEvents();
+        if (!evts.empty()) {
+            const auto& lastEvt = evts.back();
+            if (lastEvt.type == MacroK::EventType::MouseDown || lastEvt.type == MacroK::EventType::MouseUp) {
+                RECT rcBtnRec{}, rcBtnStop{};
+                GetWindowRect(g_hBtnRecord, &rcBtnRec);
+                GetWindowRect(g_hBtnStop, &rcBtnStop);
+                bool inBtn = (lastEvt.x >= rcBtnRec.left && lastEvt.x <= rcBtnRec.right &&
+                              lastEvt.y >= rcBtnRec.top && lastEvt.y <= rcBtnRec.bottom) ||
+                             (lastEvt.x >= rcBtnStop.left && lastEvt.x <= rcBtnStop.right &&
+                              lastEvt.y >= rcBtnStop.top && lastEvt.y <= rcBtnStop.bottom);
+                if (inBtn) {
+                    g_hookManager.removeEvent(evts.size() - 1);
+                }
+            }
+        }
         RefreshListView();
     }
     UpdateUIState();
@@ -428,6 +445,18 @@ static void OnEmergencyStop() {
     bool stoppedSomething = false;
     if (g_hookManager.isRecording()) {
         g_hookManager.stopRecording();
+        const auto& evts = g_hookManager.getRecordedEvents();
+        if (!evts.empty()) {
+            const auto& lastEvt = evts.back();
+            if (lastEvt.type == MacroK::EventType::MouseDown || lastEvt.type == MacroK::EventType::MouseUp) {
+                RECT rcBtnStop{};
+                GetWindowRect(g_hBtnStop, &rcBtnStop);
+                if (lastEvt.x >= rcBtnStop.left && lastEvt.x <= rcBtnStop.right &&
+                    lastEvt.y >= rcBtnStop.top && lastEvt.y <= rcBtnStop.bottom) {
+                    g_hookManager.removeEvent(evts.size() - 1);
+                }
+            }
+        }
         RefreshListView();
         stoppedSomething = true;
     }

@@ -26,7 +26,7 @@ public:
 
 private:
     void playbackWorker(std::vector<MacroEvent> events, MacroSettings settings);
-    void executeEvent(const MacroEvent& evt);
+    void executeEvent(const MacroEvent& evt, const MacroSettings& settings);
 
     std::atomic<bool> m_isPlaying{false};
     std::thread m_playbackThread;
