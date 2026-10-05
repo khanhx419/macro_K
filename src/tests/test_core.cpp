@@ -1,6 +1,7 @@
 #include "../core/Types.h"
 #include "../core/PrecisionTimer.h"
 #include "../core/MacroStorage.h"
+#include "../core/HookManager.h"
 #include <iostream>
 #include <cassert>
 #include <filesystem>
@@ -104,6 +105,26 @@ int main() {
         assert(loadedEvents[3].vkCode == 0x41);
 
         std::cout << "  - All 5 events & settings match original values!\n";
+        std::cout << "  -> PASS\n";
+    }
+
+    // Test 3: Event removal and delay merging
+    std::cout << "[TEST 3] Testing Event Deletion & Delay Merging...\n";
+    {
+        MacroK::HookManager hookMgr;
+        std::vector<MacroK::MacroEvent> evts;
+        MacroK::MacroEvent a{}; a.delayMs = 100; a.type = MacroK::EventType::MouseMove; evts.push_back(a);
+        MacroK::MacroEvent b{}; b.delayMs = 50;  b.type = MacroK::EventType::MouseDown; evts.push_back(b);
+        MacroK::MacroEvent c{}; c.delayMs = 70;  c.type = MacroK::EventType::MouseUp;   evts.push_back(c);
+        hookMgr.setRecordedEvents(evts);
+
+        bool removed = hookMgr.removeEvent(0);
+        assert(removed);
+        const auto& after = hookMgr.getRecordedEvents();
+        assert(after.size() == 2);
+        assert(after[0].type == MacroK::EventType::MouseDown);
+        assert(after[0].delayMs == 150);
+        std::cout << "  - Event removed and subsequent delay merged accurately (150ms)!\n";
         std::cout << "  -> PASS\n";
     }
 

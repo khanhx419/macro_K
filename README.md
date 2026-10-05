@@ -16,21 +16,31 @@ Dự án **Macro Recorder** hiệu năng cao được xây dựng từ con số 
    - **Số vòng lặp >= 1**: Lặp lại đúng số lần quy định.
    - **Nghỉ giữa các vòng (ms)**: Tùy chỉnh độ trễ trước khi bắt đầu vòng lặp tiếp theo.
 
-3. **Ghi nhận sự kiện thời gian thực (Low-Level Hooks):**
-   - Chuột: Di chuyển (`WM_MOUSEMOVE`), Click trái/phải/giữa/X-buttons (`WM_LBUTTONDOWN`, `WM_RBUTTONDOWN`,...), Cuộn bánh xe dọc & ngang (`WM_MOUSEWHEEL`, `WM_MOUSEHWHEEL`).
-   - Bàn phím: Bắt mọi phím bấm (`WM_KEYDOWN`, `WM_KEYUP`, phím mở rộng `isExtendedKey`, Virtual-Key code và Scan code).
-   - Lọc thông minh: Loại bỏ sự kiện giả lập (`LLKHF_INJECTED`, `LLMHF_INJECTED`), giảm bớt sự kiện di chuyển chuột thừa (throttle mouse moves).
+3. **Tùy chọn thu & Lọc thông minh (Selective Capture & Anti-Jitter):**
+   - **Tùy chọn nguồn thu**: Có thể bật/tắt độc lập:
+     - ☑ *Thu bàn phím* (Keyboard events)
+     - ☑ *Thu chuột (Click & Cuộn)* (Mouse clicks & wheel)
+     - ☑ *Thu di chuyển chuột* (Mouse move)
+   - **Lọc rung chuột đứng im (Smart Stationary Filter)**: Tự động lọc rung vi mô (< 3 pixel) khi chuột đứng yên, không còn tình trạng ghi hàng loạt sự kiện di chuyển thừa khi không di chuột.
+   - **Chế độ im lặng (Silent Mode)**: Loại bỏ hoàn toàn âm thanh beep hệ thống khó chịu khi ghi/dừng/phát.
 
-4. **Phát lại chuẩn xác cấp mili-giây (High-Precision Playback):**
+4. **Quản lý & Xóa hành động linh hoạt (Action Editor):**
+   - Có thể chọn một hoặc nhiều dòng hành động trong bảng danh sách và bấm nút **`[ ➖ Xóa Chọn ]`** hoặc nhấn phím **`[Delete]`**.
+   - **Bảo toàn thời gian (Delay Merging)**: Khi xóa 1 hành động (ví dụ xóa 1 cú click hoặc 1 lần di chuột thừa), độ trễ thời gian (`delayMs`) của hành động đó được tự động gộp vào hành động kế tiếp, đảm bảo nhịp độ thực thi của macro không bị đẩy nhanh bất thường.
+   - Nút **`[ 🗑️ Xóa Hết ]`** để làm mới danh sách.
+
+5. **Phát lại chuẩn xác cấp mili-giây (High-Precision Playback):**
    - Sử dụng `QueryPerformanceCounter` và Windows Timer resolution 1ms (`timeBeginPeriod`).
    - Giả lập bằng `SendInput` chuẩn Win32 hỗ trợ đa màn hình (Multi-monitor Virtual Desktop coordinates).
    - Hỗ trợ tăng tốc độ (0.5x, 1x, 1.5x, 2x, 3x, 5x, 10x,...).
 
-5. **Phím tắt toàn cục (Global Hotkeys):**
-   - **`[F8]`**: Bắt đầu / Dừng ghi macro mọi lúc mọi nơi.
-   - **`[F9]`**: Bắt đầu phát lại / Dừng phát lại macro.
-   - **`[ESC]`**: Dừng khẩn cấp (Emergency Stop) ngay lập tức (đặc biệt hữu ích khi đang lặp vô hạn).
-   - Các phím điều khiển này tự động bị bỏ qua, không bị ghi nhầm vào chuỗi macro.
+6. **Phím tắt toàn cục có thể tùy chỉnh (Custom Global Hotkeys):**
+   - Mặc định:
+     - **`[F8]`**: Bắt đầu / Dừng ghi macro.
+     - **`[F9]`**: Bắt đầu phát lại / Dừng phát lại macro.
+     - **`[ESC]`**: Dừng khẩn cấp (Emergency Stop) ngay lập tức.
+   - Có thể tùy chỉnh đổi sang các phím chức năng khác (F1 - F12) ngay trên giao diện hoặc menu cấu hình.
+   - Các phím hotkey tự động được loại trừ, không bị ghi nhầm vào chuỗi macro.
 
 ---
 
@@ -85,16 +95,20 @@ Script sẽ tự động biên dịch toàn bộ:
 ## 🎮 Hướng dẫn sử dụng Giao diện GUI
 
 1. Nhấp đúp mở file `bin\macro_k_gui.exe`.
-2. **Cấu hình Vòng lặp:**
+2. **Cài đặt thu & Vòng lặp:**
+   - Chọn loại sự kiện muốn ghi: *Thu bàn phím*, *Thu chuột (Click & Cuộn)*, *Thu di chuyển chuột*.
    - Trong ô **Số vòng lặp**, nhập `0` nếu muốn **Lặp Vô Hạn** cho tới khi bấm **ESC**.
    - Hoặc nhập số nguyên dương (ví dụ `1`, `5`, `10`) để lặp đúng số lần.
 3. **Ghi macro:**
    - Nhấn nút **● Bắt đầu Ghi (F8)** hoặc bấm phím tắt **F8**.
    - Thao tác chuột và bàn phím (sự kiện sẽ xuất hiện trực tiếp trên bảng danh sách).
    - Nhấn **■ Dừng Ghi (F8)** hoặc bấm **F8** để kết thúc.
-4. **Phát lại:**
+4. **Chỉnh sửa / Xóa bớt hành động:**
+   - Muốn xóa 1 cú click hoặc 1 lần di chuột thừa: nhấp chọn dòng đó trên bảng rồi nhấn nút **`[ ➖ Xóa Chọn ]`** hoặc gõ phím **`Delete`**.
+   - Có thể giữ `Ctrl` hoặc `Shift` để chọn và xóa nhiều hành động cùng lúc.
+5. **Phát lại:**
    - Nhấn nút **▶ Phát Macro (F9)** hoặc bấm **F9**.
    - Trong lúc phát (kể cả khi đang lặp vô hạn), bạn có thể nhấn **ESC** hoặc **F9** bất cứ lúc nào để dừng lại ngay lập tức.
-5. **Lưu & Mở file:**
+6. **Lưu & Mở file:**
    - Bấm **💾 Lưu File...** để lưu vào thư mục `macros/`.
    - Bấm **📂 Mở File...** để nạp macro có sẵn.

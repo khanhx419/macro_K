@@ -83,6 +83,9 @@ public:
                 case '6':
                     configureSettings();
                     break;
+                case '8':
+                    deleteEventByIndex();
+                    break;
                 case '7':
                 case 'q':
                 case 'Q':
@@ -125,7 +128,8 @@ private:
         std::cout << " [3] Xem danh sach su kien vua ghi (View Events)\n";
         std::cout << " [4] Luu Macro ra file JSON (Save)\n";
         std::cout << " [5] Tai Macro tu file JSON (Load)\n";
-        std::cout << " [6] Cai dat toc do, vong lap & phim tat (Settings)\n";
+        std::cout << " [6] Cai dat toc do, vong lap, thu phim/chuot (Settings)\n";
+        std::cout << " [8] Xoa 1 su kien theo STT (Delete Action)\n";
         std::cout << " [7] Thoat (Exit)\n";
     }
 
@@ -290,17 +294,38 @@ private:
         }
     }
 
+    void deleteEventByIndex() {
+        const auto& events = m_hookManager.getRecordedEvents();
+        if (events.empty()) {
+            std::cout << "\n[!] Bo nho trong, khong co su kien nao de xoa!\n";
+            return;
+        }
+
+        std::cout << "\nDanh sach dang co " << events.size() << " su kien.";
+        std::cout << "\nNhap STT su kien muon xoa (1 - " << events.size() << "): ";
+        size_t idx;
+        if (std::cin >> idx && idx >= 1 && idx <= events.size()) {
+            m_hookManager.removeEvent(idx - 1);
+            std::cout << ">>> Da xoa thanh cong su kien #" << idx << "! Con lai: " 
+                      << m_hookManager.getRecordedEvents().size() << " su kien. <<<\n";
+        } else {
+            std::cout << "So thu tu khong hop le!\n";
+        }
+    }
+
     void configureSettings() {
         std::cout << "\n=== CAI DAT MACRO ===\n";
         std::cout << "1. Toc do phat hien tai: " << m_settings.speedMultiplier << "x\n";
         std::cout << "2. So lan lap: " << (m_settings.loopCount == 0 ? "Vo han (0)" : std::to_string(m_settings.loopCount)) << "\n";
         std::cout << "3. Do tre giua cac vong lap: " << m_settings.loopDelayMs << " ms\n";
-        std::cout << "4. Ghi chuyen dong chuot: " << (m_settings.recordMouseMoves ? "Bat" : "Tat") << "\n";
-        std::cout << "5. Phim tat Ghi: " << MacroK::MacroStorage::getKeyName(m_settings.hotkeyRecord, 0, false) << "\n";
-        std::cout << "6. Phim tat Phat: " << MacroK::MacroStorage::getKeyName(m_settings.hotkeyPlay, 0, false) << "\n";
-        std::cout << "7. Phim tat Dung: " << MacroK::MacroStorage::getKeyName(m_settings.hotkeyStop, 0, false) << "\n";
+        std::cout << "4. Thu ban phim: " << (m_settings.recordKeyboard ? "BAT" : "TAT") << "\n";
+        std::cout << "5. Thu chuot (Click & Cuon): " << (m_settings.recordMouse ? "BAT" : "TAT") << "\n";
+        std::cout << "6. Thu di chuyen chuot: " << (m_settings.recordMouseMoves ? "BAT" : "TAT") << "\n";
+        std::cout << "7. Phim tat Ghi: " << MacroK::MacroStorage::getKeyName(m_settings.hotkeyRecord, 0, false) << "\n";
+        std::cout << "8. Phim tat Phat: " << MacroK::MacroStorage::getKeyName(m_settings.hotkeyPlay, 0, false) << "\n";
+        std::cout << "9. Phim tat Dung: " << MacroK::MacroStorage::getKeyName(m_settings.hotkeyStop, 0, false) << "\n";
 
-        std::cout << "\nChon muc can doi (1-7, hoac phim khac de quay lai): ";
+        std::cout << "\nChon muc can doi (1-9, hoac phim khac de quay lai): ";
         char opt = _getch();
         std::cout << opt << "\n";
 
@@ -326,8 +351,14 @@ private:
                 std::cout << "Da cap nhat delay: " << delay << " ms\n";
             }
         } else if (opt == '4') {
+            m_settings.recordKeyboard = !m_settings.recordKeyboard;
+            std::cout << "Da chuyen thu ban phim thanh: " << (m_settings.recordKeyboard ? "BAT" : "TAT") << "\n";
+        } else if (opt == '5') {
+            m_settings.recordMouse = !m_settings.recordMouse;
+            std::cout << "Da chuyen thu chuot thanh: " << (m_settings.recordMouse ? "BAT" : "TAT") << "\n";
+        } else if (opt == '6') {
             m_settings.recordMouseMoves = !m_settings.recordMouseMoves;
-            std::cout << "Da chuyen ghi chuot thanh: " << (m_settings.recordMouseMoves ? "BAT" : "TAT") << "\n";
+            std::cout << "Da chuyen thu di chuyen chuot thanh: " << (m_settings.recordMouseMoves ? "BAT" : "TAT") << "\n";
         }
     }
 

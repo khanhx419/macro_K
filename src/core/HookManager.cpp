@@ -145,6 +145,35 @@ void HookManager::setRecordedEvents(const std::vector<MacroEvent>& events) {
     m_events = events;
 }
 
+bool HookManager::removeEvent(size_t index) {
+    std::lock_guard<std::mutex> lock(m_eventMutex);
+    if (index >= m_events.size()) return false;
+    if (index + 1 < m_events.size()) {
+        m_events[index + 1].delayMs += m_events[index].delayMs;
+    }
+    m_events.erase(m_events.begin() + index);
+    return true;
+}
+
+bool HookManager::removeEvents(std::vector<size_t> indices) {
+    std::lock_guard<std::mutex> lock(m_eventMutex);
+    if (indices.empty() || m_events.empty()) return false;
+
+    // Sort descending to safely erase from back to front
+    std::sort(indices.begin(), indices.end(), std::greater<size_t>());
+    indices.erase(std::unique(indices.begin(), indices.end()), indices.end());
+
+    for (size_t idx : indices) {
+        if (idx < m_events.size()) {
+            if (idx + 1 < m_events.size()) {
+                m_events[idx + 1].delayMs += m_events[idx].delayMs;
+            }
+            m_events.erase(m_events.begin() + idx);
+        }
+    }
+    return true;
+}
+
 void HookManager::clearEvents() {
     std::lock_guard<std::mutex> lock(m_eventMutex);
     m_events.clear();
@@ -191,6 +220,8 @@ LRESULT CALLBACK HookManager::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPA
 }
 
 void HookManager::handleMouseEvent(WPARAM wParam, const MSLLHOOKSTRUCT* pMouse) {
+    if (!m_settings.recordMouse) return;
+
     uint64_t currentMs = m_timer.getElapsedMs();
     uint32_t delay = static_cast<uint32_t>(currentMs - m_lastEventTimeMs);
 
@@ -316,6 +347,8 @@ void HookManager::handleMouseEvent(WPARAM wParam, const MSLLHOOKSTRUCT* pMouse) 
 }
 
 void HookManager::handleKeyboardEvent(WPARAM wParam, const KBDLLHOOKSTRUCT* pKey) {
+    if (!m_settings.recordKeyboard) return;
+
     uint64_t currentMs = m_timer.getElapsedMs();
     uint32_t delay = static_cast<uint32_t>(currentMs - m_lastEventTimeMs);
 

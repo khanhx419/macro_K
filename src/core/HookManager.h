@@ -27,6 +27,8 @@ public:
 
     const std::vector<MacroEvent>& getRecordedEvents() const;
     void setRecordedEvents(const std::vector<MacroEvent>& events);
+    bool removeEvent(size_t index);
+    bool removeEvents(std::vector<size_t> indices);
     void clearEvents();
 
     void setEventCallback(EventCallback cb) { m_eventCallback = cb; }

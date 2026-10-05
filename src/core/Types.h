@@ -47,6 +47,8 @@ struct MacroSettings {
     double speedMultiplier{1.0};      // 1.0 = normal, 2.0 = 2x faster, 0.5 = 2x slower
     uint32_t loopCount{0};            // 0 = infinite loop (stop on ESC), 1..N = repeat count
     uint32_t loopDelayMs{500};        // Delay between loops
+    bool recordKeyboard{true};        // Record keyboard events (keys)
+    bool recordMouse{true};           // Record mouse events (clicks, scroll, moves)
     bool recordMouseMoves{true};      // Record continuous mouse trajectories
     uint32_t mouseMoveIntervalMs{15}; // Minimum interval between recorded mouse moves
     int32_t mouseMoveThresholdPx{3};  // Minimum movement distance in px to filter stationary jitter

@@ -110,6 +110,8 @@ bool MacroStorage::saveToFile(const std::string& filePath,
     out << "    \"speedMultiplier\": " << std::fixed << std::setprecision(2) << settings.speedMultiplier << ",\n";
     out << "    \"loopCount\": " << settings.loopCount << ",\n";
     out << "    \"loopDelayMs\": " << settings.loopDelayMs << ",\n";
+    out << "    \"recordKeyboard\": " << (settings.recordKeyboard ? "true" : "false") << ",\n";
+    out << "    \"recordMouse\": " << (settings.recordMouse ? "true" : "false") << ",\n";
     out << "    \"recordMouseMoves\": " << (settings.recordMouseMoves ? "true" : "false") << ",\n";
     out << "    \"mouseMoveIntervalMs\": " << settings.mouseMoveIntervalMs << ",\n";
     out << "    \"mouseMoveThresholdPx\": " << settings.mouseMoveThresholdPx << ",\n";
@@ -248,6 +250,8 @@ bool MacroStorage::loadFromFile(const std::string& filePath,
             outSettings.speedMultiplier = extractDoubleValue(setBlock, "speedMultiplier", 1.0);
             outSettings.loopCount = static_cast<uint32_t>(extractInt64Value(setBlock, "loopCount", 0));
             outSettings.loopDelayMs = static_cast<uint32_t>(extractInt64Value(setBlock, "loopDelayMs", 500));
+            outSettings.recordKeyboard = extractBoolValue(setBlock, "recordKeyboard", true);
+            outSettings.recordMouse = extractBoolValue(setBlock, "recordMouse", true);
             outSettings.recordMouseMoves = extractBoolValue(setBlock, "recordMouseMoves", true);
             outSettings.mouseMoveIntervalMs = static_cast<uint32_t>(extractInt64Value(setBlock, "mouseMoveIntervalMs", 15));
             outSettings.mouseMoveThresholdPx = static_cast<int32_t>(extractInt64Value(setBlock, "mouseMoveThresholdPx", 3));

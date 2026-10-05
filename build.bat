@@ -18,7 +18,6 @@ if %errorlevel% neq 0 (
 where g++ >nul 2>nul
 if %errorlevel% neq 0 (
     echo [ERROR] g++ compiler not found in PATH!
-    pause
     exit /b 1
 )
 
@@ -36,7 +35,6 @@ g++ -std=c++17 -O2 -mwindows -static -static-libgcc -static-libstdc++ ^
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to compile macro_k_gui.exe!
-    pause
     exit /b %errorlevel%
 )
 
@@ -51,7 +49,6 @@ g++ -std=c++17 -O2 -static -static-libgcc -static-libstdc++ ^
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to compile macro_k.exe!
-    pause
     exit /b %errorlevel%
 )
 
@@ -67,20 +64,19 @@ g++ -std=c++17 -O2 -shared -static-libgcc -static-libstdc++ ^
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to compile macro_k_core.dll!
-    pause
     exit /b %errorlevel%
 )
 
 echo [4/4] Compiling Unit Tests (bin\test_core.exe)...
 g++ -std=c++17 -O2 -static -static-libgcc -static-libstdc++ ^
     src\tests\test_core.cpp ^
+    src\core\HookManager.cpp ^
     src\core\MacroStorage.cpp ^
-    -lwinmm ^
+    -lwinmm -luser32 ^
     -o bin\test_core.exe
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to compile test_core.exe!
-    pause
     exit /b %errorlevel%
 )
 
