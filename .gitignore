@@ -1,0 +1,24 @@
+# Build outputs & executables
+bin/
+obj/
+build/
+*.exe
+*.dll
+*.o
+*.a
+*.lib
+*.log
+
+# Unit test artifacts
+macros/unit_test.json
+
+# IDE & Editor files
+.vscode/
+.vs/
+.idea/
+*.swp
+*.user
+
+# OS generated files
+Thumbs.db
+Desktop.ini

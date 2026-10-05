@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "settings": {
+    "speedMultiplier": 1.0,
+    "loopCount": 1,
+    "loopDelayMs": 500,
+    "recordMouseMoves": true,
+    "mouseMoveIntervalMs": 10
+  },
+  "events": [
+    {
+      "type": "MouseMove",
+      "delayMs": 500,
+      "timestampMs": 500,
+      "x": 400,
+      "y": 400
+    },
+    {
+      "type": "MouseMove",
+      "delayMs": 300,
+      "timestampMs": 800,
+      "x": 600,
+      "y": 400
+    },
+    {
+      "type": "MouseMove",
+      "delayMs": 300,
+      "timestampMs": 1100,
+      "x": 600,
+      "y": 600
+    },
+    {
+      "type": "MouseMove",
+      "delayMs": 300,
+      "timestampMs": 1400,
+      "x": 400,
+      "y": 600
+    },
+    {
+      "type": "MouseMove",
+      "delayMs": 300,
+      "timestampMs": 1700,
+      "x": 400,
+      "y": 400
+    }
+  ]
+}
