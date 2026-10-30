@@ -112,3 +112,22 @@ Script sẽ tự động biên dịch toàn bộ:
 6. **Lưu & Mở file:**
    - Bấm **💾 Lưu File...** để lưu vào thư mục `macros/`.
    - Bấm **📂 Mở File...** để nạp macro có sẵn.
+
+
+## Auto Click
+
+- Bảng **Auto Click** cho phép chọn chuột trái, phải hoặc giữa; khoảng nghỉ tối thiểu **10 ms** (mặc định 100 ms).
+- **Số click = 0**: chạy vô hạn; số dương: dừng khi đủ số click.
+- Nhấn **F6** hoặc nút **Auto Click (F6)** để bật/tắt. F6 được dành riêng cho Auto Click.
+- Bắt đầu sau **1 giây** để bạn di chuyển con trỏ đến vị trí cần click. Click luôn theo vị trí hiện tại của con trỏ.
+- Có thể dừng bằng nút **Dừng** hoặc phím dừng khẩn cấp đã cấu hình (mặc định **ESC**).
+- Auto Click chạy độc lập, không cần ghi macro; không chạy đồng thời với ghi/phát macro. Cài đặt Auto Click áp dụng cho phiên hiện tại.
+- Khoảng nghỉ phụ thuộc bộ định thời Windows và tải hệ thống. Nếu F6 đã được ứng dụng khác đăng ký, sử dụng nút trên giao diện.
+
+
+### Giao diện rút gọn
+
+- **Auto Click**: tab mặc định, chỉ hiện nút chuột, khoảng nghỉ, số click và nút bật/tắt. Nhấn F6 để bắt đầu hoặc dừng.
+- **Macro**: tab riêng cho ghi/phát/dừng và danh sách sự kiện.
+- **Tệp**: mở/lưu macro, xóa sự kiện đã chọn hoặc xóa hết.
+- **Cài đặt**: số vòng lặp, tốc độ, thời gian nghỉ, nguồn ghi và phím tắt. Nhấn **Xong** để quay lại. Menu này tạm khóa khi đang ghi/phát hoặc Auto Click.

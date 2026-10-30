@@ -15,6 +15,7 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <limits>
 
 #include "../core/Types.h"
 #include "../core/HookManager.h"
@@ -52,6 +53,20 @@ namespace fs = std::filesystem;
 #define IDC_COMBO_HK_PLAY     1018
 #define IDC_COMBO_HK_STOP     1019
 #define IDC_FOOTER_HINT       1020
+#define IDC_AUTO_TOGGLE       1021
+#define IDC_AUTO_BUTTON       1022
+#define IDC_AUTO_INTERVAL     1023
+#define IDC_AUTO_COUNT        1024
+#define IDC_VIEW_TABS         1025
+#define IDM_SETTINGS          1026
+#define IDC_SETTINGS_DONE     1027
+static constexpr UINT_PTR kAutoTimer = 1;
+static constexpr int kAutoHotkey = 1;
+static HWND g_autoToggle, g_autoButton, g_autoInterval, g_autoCount;
+static bool g_autoRunning = false;
+static uint64_t g_autoClicks = 0;
+static uint32_t g_autoLimit = 0;
+static DWORD g_autoDown = 0, g_autoUp = 0;
 
 // Global handles
 static HWND g_hWnd = nullptr;
@@ -84,6 +99,74 @@ static MacroK::HookManager g_hookManager;
 static MacroK::MacroPlayer g_player;
 static MacroK::MacroSettings g_settings;
 
+static HWND g_tabs = nullptr;
+static int g_view = 0, g_previousView = 0, g_buildPage = -1;
+static UINT g_dpi = 96;
+static int Scale(int value) { return MulDiv(value, g_dpi, 96); }
+struct ControlLayout {
+    HWND handle;
+    int x, y, width, height;
+    bool bold;
+    int page;
+};
+static std::vector<ControlLayout> g_layout;
+
+static void UpdateFontsAndLayout() {
+    HFONT normal = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_NORMAL,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY, DEFAULT_PITCH, L"Tahoma");
+    HFONT bold = CreateFontW(-MulDiv(10, g_dpi, 72), 0, 0, 0, FW_BOLD,
+        FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        DEFAULT_QUALITY, DEFAULT_PITCH, L"Tahoma");
+    for (const auto& item : g_layout) {
+        SetWindowPos(item.handle, nullptr, Scale(item.x), Scale(item.y),
+            Scale(item.width), Scale(item.height), SWP_NOZORDER | SWP_NOACTIVATE);
+        SendMessage(item.handle, WM_SETFONT, reinterpret_cast<WPARAM>(item.bold ? bold : normal), TRUE);
+    }
+    const int widths[] = {32, 95, 65, 216, 90};
+    if (g_hListEvents) {
+        for (int i = 0; i < 5; ++i) ListView_SetColumnWidth(g_hListEvents, i, Scale(widths[i]));
+    }
+    if (g_hFontNormal) DeleteObject(g_hFontNormal);
+    if (g_hFontBold) DeleteObject(g_hFontBold);
+    if (g_hFontStatus) DeleteObject(g_hFontStatus);
+    g_hFontNormal = normal;
+    g_hFontBold = bold;
+    g_hFontStatus = nullptr;
+}
+
+// Each view exposes only the controls needed for the current task.
+static void ShowView(int view) {
+    if (view < 0 || view > 2) return;
+    if (view == 2 && (g_autoRunning || g_player.isPlaying() || g_hookManager.isRecording())) return;
+    g_view = view;
+    TabCtrl_SetCurSel(g_tabs, view == 2 ? -1 : view);
+    for (auto& item : g_layout) {
+        bool visible = item.page == -1 || item.page == view;
+        if (item.handle == g_hStatusLabel || item.handle == g_hProgressLabel) {
+            visible = view != 2;
+            item.y = (view == 0 ? 190 : 352) + (item.handle == g_hProgressLabel ? 24 : 0);
+        }
+        if (item.handle == g_hBtnStop) {
+            visible = view != 2;
+            item.x = view == 0 ? 378 : 364;
+            item.y = view == 0 ? 140 : 52;
+        }
+        ShowWindow(item.handle, visible ? SW_SHOW : SW_HIDE);
+        SetWindowPos(item.handle, nullptr, Scale(item.x), Scale(item.y),
+            Scale(item.width), Scale(item.height), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    RECT frame{0, 0, Scale(540), Scale(view == 0 ? 246 : 408)};
+    DWORD style = static_cast<DWORD>(GetWindowLongPtrW(g_hWnd, GWL_STYLE));
+    using AdjustForDpi = BOOL (WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    auto adjust = reinterpret_cast<AdjustForDpi>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "AdjustWindowRectExForDpi"));
+    if (adjust) adjust(&frame, style, TRUE, 0, g_dpi);
+    else AdjustWindowRectEx(&frame, style, TRUE, 0);
+    SetWindowPos(g_hWnd, nullptr, 0, 0, frame.right - frame.left, frame.bottom - frame.top,
+        SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    InvalidateRect(g_hWnd, nullptr, TRUE);
+}
+
 // Supported hotkeys list
 struct HotkeyOption {
     const wchar_t* name;
@@ -96,7 +179,6 @@ static const HotkeyOption kAvailableHotkeys[] = {
     { L"F3", VK_F3 },
     { L"F4", VK_F4 },
     { L"F5", VK_F5 },
-    { L"F6", VK_F6 },
     { L"F7", VK_F7 },
     { L"F8", VK_F8 },
     { L"F9", VK_F9 },
@@ -141,13 +223,6 @@ static std::wstring GetHotkeyName(uint32_t vkCode) {
     return L"Key_" + std::to_wstring(vkCode);
 }
 
-// Helper to set Segoe UI font to controls
-static void SetControlFont(HWND hCtrl, HFONT hFont) {
-    if (hCtrl && hFont) {
-        SendMessage(hCtrl, WM_SETFONT, reinterpret_cast<WPARAM>(hFont), TRUE);
-    }
-}
-
 // Convert wide string to std::string UTF-8
 static std::string WStringToString(const std::wstring& wstr) {
     if (wstr.empty()) return "";
@@ -169,6 +244,50 @@ static std::wstring StringToWString(const std::string& str) {
 // Forward declarations
 static void UpdateUIState();
 static void RefreshListView();
+
+// Auto click sends each press/release together at the current cursor position.
+static void StopAutoClick() {
+    KillTimer(g_hWnd, kAutoTimer);
+    g_autoRunning = false;
+    UpdateUIState();
+}
+
+static bool ReadAutoNumber(HWND control, uint32_t minimum, uint32_t& value) {
+    wchar_t text[64]{};
+    GetWindowTextW(control, text, 64);
+    std::wstring input(text);
+    if (input.empty() || input.find_first_not_of(L"0123456789") != std::wstring::npos) return false;
+    try {
+        auto number = std::stoull(input);
+        if (number < minimum || number > (std::numeric_limits<uint32_t>::max)()) return false;
+        value = static_cast<uint32_t>(number);
+        return true;
+    } catch (...) { return false; }
+}
+
+static void ToggleAutoClick() {
+    if (g_autoRunning) { StopAutoClick(); return; }
+    if (g_hookManager.isRecording() || g_player.isPlaying() || g_autoRunning) return;
+    uint32_t interval;
+    if (!ReadAutoNumber(g_autoInterval, 10, interval) || interval > USER_TIMER_MAXIMUM ||
+        !ReadAutoNumber(g_autoCount, 0, g_autoLimit)) {
+        MessageBoxW(g_hWnd, L"Khoảng nghỉ phải từ 10 đến 2147483647 ms. Số click từ 0 đến 4294967295 (0 = vô hạn).",
+                    L"Cài đặt Auto Click không hợp lệ", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    int button = static_cast<int>(SendMessage(g_autoButton, CB_GETCURSEL, 0, 0));
+    g_autoDown = button == 1 ? MOUSEEVENTF_RIGHTDOWN : button == 2 ? MOUSEEVENTF_MIDDLEDOWN : MOUSEEVENTF_LEFTDOWN;
+    g_autoUp = button == 1 ? MOUSEEVENTF_RIGHTUP : button == 2 ? MOUSEEVENTF_MIDDLEUP : MOUSEEVENTF_LEFTUP;
+    g_autoClicks = 0;
+    // Give the user time to move away from the Start button.
+    if (!SetTimer(g_hWnd, kAutoTimer, 1000, nullptr)) {
+        MessageBoxW(g_hWnd, L"Không thể khởi tạo Auto Click.", L"Lỗi", MB_OK | MB_ICONERROR);
+        return;
+    }
+    ShowView(0);
+    g_autoRunning = true;
+    UpdateUIState();
+}
 
 // Read settings from GUI controls
 static void SyncSettingsFromUI() {
@@ -234,6 +353,10 @@ static void SyncSettingsFromUI() {
 
 // Update GUI settings controls from g_settings
 static void SyncSettingsToUI() {
+    // Older macro files may have assigned the now-reserved Auto Click key.
+    if (g_settings.hotkeyRecord == VK_F6) g_settings.hotkeyRecord = VK_F8;
+    if (g_settings.hotkeyPlay == VK_F6) g_settings.hotkeyPlay = VK_F9;
+    if (g_settings.hotkeyStop == VK_F6) g_settings.hotkeyStop = VK_ESCAPE;
     std::wstring loopStr = std::to_wstring(g_settings.loopCount);
     SetWindowTextW(g_hEditLoop, loopStr.c_str());
 
@@ -322,7 +445,7 @@ static void RefreshListView() {
 // UI State Updates
 static void UpdateUIState() {
     bool recording = g_hookManager.isRecording();
-    bool playing = g_player.isPlaying();
+    bool playing = g_player.isPlaying() || g_autoRunning;
     size_t eventCount = g_hookManager.getRecordedEvents().size();
 
     std::wstring hkRecName = GetHotkeyName(g_settings.hotkeyRecord);
@@ -330,25 +453,25 @@ static void UpdateUIState() {
     std::wstring hkStopName = GetHotkeyName(g_settings.hotkeyStop);
 
     // Update button text with current hotkeys
-    SetWindowTextW(g_hBtnStop, (L"⏹ Dừng (" + hkStopName + L")").c_str());
+    SetWindowTextW(g_hBtnStop, (L"Dừng · " + hkStopName).c_str());
 
     if (recording) {
-        SetWindowTextW(g_hBtnRecord, (L"■ DỪNG GHI (" + hkRecName + L")").c_str());
-        SetWindowTextW(g_hBtnPlay, (L"▶ Phát Macro (" + hkPlayName + L")").c_str());
+        SetWindowTextW(g_hBtnRecord, (L"Dừng ghi · " + hkRecName).c_str());
+        SetWindowTextW(g_hBtnPlay, (L"Phát · " + hkPlayName).c_str());
         EnableWindow(g_hBtnPlay, FALSE);
         EnableWindow(g_hBtnOpen, FALSE);
         EnableWindow(g_hBtnSave, FALSE);
         EnableWindow(g_hBtnDeleteSel, FALSE);
         EnableWindow(g_hBtnClear, FALSE);
 
-        std::wstring stat = L"[🔴 ĐANG GHI MACRO...] Hãy thao tác | Bấm " + hkRecName + L" hoặc " + hkStopName + L" để dừng";
+        std::wstring stat = L"Đang ghi macro  ·  Nhấn " + hkRecName + L" hoặc " + hkStopName + L" để dừng";
         SetWindowTextW(g_hStatusLabel, stat.c_str());
 
-        std::wstring prog = L"Đã bắt: " + std::to_wstring(eventCount) + L" sự kiện (Đã lọc rung chuột đứng im)";
+        std::wstring prog = L"Đã ghi " + std::to_wstring(eventCount) + L" sự kiện  ·  Tự lọc rung chuột";
         SetWindowTextW(g_hProgressLabel, prog.c_str());
     } else if (playing) {
-        SetWindowTextW(g_hBtnRecord, (L"● Bắt đầu Ghi (" + hkRecName + L")").c_str());
-        SetWindowTextW(g_hBtnPlay, (L"■ DỪNG PHÁT (" + hkPlayName + L" / " + hkStopName + L")").c_str());
+        SetWindowTextW(g_hBtnRecord, (L"Ghi · " + hkRecName).c_str());
+        SetWindowTextW(g_hBtnPlay, (L"Dừng phát · " + hkPlayName).c_str());
         EnableWindow(g_hBtnRecord, FALSE);
         EnableWindow(g_hBtnOpen, FALSE);
         EnableWindow(g_hBtnSave, FALSE);
@@ -357,14 +480,14 @@ static void UpdateUIState() {
 
         std::wstring stat;
         if (g_settings.loopCount == 0) {
-            stat = L"[▶️ ĐANG PHÁT LẠI...] Lặp vô hạn (0) - Bấm " + hkStopName + L" hoặc " + hkPlayName + L" để dừng!";
+            stat = L"Đang phát  ·  Lặp vô hạn  ·  Nhấn " + hkStopName + L" hoặc " + hkPlayName + L" để dừng";
         } else {
-            stat = L"[▶️ ĐANG PHÁT LẠI...] Số vòng lặp: " + std::to_wstring(g_settings.loopCount) + L" - Bấm " + hkStopName + L" để dừng!";
+            stat = L"Đang phát  ·  Số vòng: " + std::to_wstring(g_settings.loopCount) + L" - Bấm " + hkStopName + L" để dừng!";
         }
         SetWindowTextW(g_hStatusLabel, stat.c_str());
     } else {
-        SetWindowTextW(g_hBtnRecord, (L"● Bắt đầu Ghi (" + hkRecName + L")").c_str());
-        SetWindowTextW(g_hBtnPlay, (L"▶ Phát Macro (" + hkPlayName + L")").c_str());
+        SetWindowTextW(g_hBtnRecord, (L"Ghi · " + hkRecName).c_str());
+        SetWindowTextW(g_hBtnPlay, (L"Phát · " + hkPlayName).c_str());
         EnableWindow(g_hBtnRecord, TRUE);
         EnableWindow(g_hBtnPlay, (eventCount > 0) ? TRUE : FALSE);
         EnableWindow(g_hBtnOpen, TRUE);
@@ -372,28 +495,52 @@ static void UpdateUIState() {
         EnableWindow(g_hBtnDeleteSel, (eventCount > 0) ? TRUE : FALSE);
         EnableWindow(g_hBtnClear, (eventCount > 0) ? TRUE : FALSE);
 
-        std::wstring stat = L"[SẴN SÀNG] Tổng số sự kiện trong bộ nhớ: " + std::to_wstring(eventCount);
+        std::wstring stat = L"Sẵn sàng  ·  Sự kiện: " + std::to_wstring(eventCount);
         SetWindowTextW(g_hStatusLabel, stat.c_str());
 
         std::wstring prog;
         if (g_settings.loopCount == 0) {
-            prog = L"Cài đặt: Lặp VÔ HẠN (cho tới khi bấm " + hkStopName + L") | Tốc độ: " + std::to_wstring(g_settings.speedMultiplier).substr(0, 3) + L"x";
+            prog = L"Lặp vô hạn  ·  Dừng: " + hkStopName + L"  ·  Tốc độ: " + std::to_wstring(g_settings.speedMultiplier).substr(0, 3) + L"x";
         } else {
-            prog = L"Cài đặt: Lặp " + std::to_wstring(g_settings.loopCount) + L" lần | Tốc độ: " + std::to_wstring(g_settings.speedMultiplier).substr(0, 3) + L"x";
+            prog = L"Lặp " + std::to_wstring(g_settings.loopCount) + L" lần  ·  Tốc độ: " + std::to_wstring(g_settings.speedMultiplier).substr(0, 3) + L"x";
         }
         SetWindowTextW(g_hProgressLabel, prog.c_str());
     }
 
+    EnableWindow(g_autoToggle, !recording && !g_player.isPlaying());
+    SetWindowTextW(g_autoToggle, g_autoRunning ? L"Dừng · F6" : L"Bắt đầu · F6");
+    for (HWND control : {g_autoButton, g_autoInterval, g_autoCount}) EnableWindow(control, !g_autoRunning);
+    if (g_autoRunning) {
+        SetWindowTextW(g_hStatusLabel, L"Auto Click đang chạy  ·  Nhấn F6 hoặc phím Dừng để kết thúc");
+        std::wstring progress = L"Đã click: " + std::to_wstring(g_autoClicks) +
+            (g_autoLimit ? L" / " + std::to_wstring(g_autoLimit) : L" / Vô hạn");
+        SetWindowTextW(g_hProgressLabel, progress.c_str());
+    }
+
+    HMENU menu = GetMenu(g_hWnd);
+    bool idle = !recording && !playing;
+    EnableMenuItem(menu, IDC_BTN_OPEN, MF_BYCOMMAND | (idle ? MF_ENABLED : MF_GRAYED));
+    for (UINT id : {IDC_BTN_SAVE, IDC_BTN_DELETE_SEL, IDC_BTN_CLEAR})
+        EnableMenuItem(menu, id, MF_BYCOMMAND | (idle && eventCount ? MF_ENABLED : MF_GRAYED));
+    EnableMenuItem(menu, IDM_SETTINGS, MF_BYCOMMAND | (idle ? MF_ENABLED : MF_GRAYED));
+    if (g_view == 0 && !recording && !g_player.isPlaying()) {
+        SetWindowTextW(g_hStatusLabel, g_autoRunning ? L"Đang click · F6 để dừng" : L"Sẵn sàng · F6 để bắt đầu");
+        std::wstring count = L"Đã click: " + std::to_wstring(g_autoClicks);
+        if (g_autoLimit) count += L" / " + std::to_wstring(g_autoLimit);
+        SetWindowTextW(g_hProgressLabel, count.c_str());
+    }
+
     // Update footer hint bar
-    std::wstring footer = L"💡 Phím tắt toàn cục: [" + hkRecName + L"] Ghi/Dừng  |  [" + hkPlayName + L"] Phát/Dừng  |  [" + hkStopName + L"] Dừng khẩn cấp  |  [Phím Delete] Xóa mục chọn";
+    std::wstring footer = L"F6  Auto Click bật/tắt    ·    " + hkRecName + L"  Ghi    ·    " + hkPlayName + L"  Phát    ·    " + hkStopName + L"  Dừng    ·    Del  Xóa chọn";
     SetWindowTextW(g_hFooterHint, footer.c_str());
 }
 
 // Action: Toggle Recording
 static void OnToggleRecord() {
-    if (g_player.isPlaying()) return;
+    if (g_player.isPlaying() || g_autoRunning) return;
 
     if (!g_hookManager.isRecording()) {
+        ShowView(1);
         SyncSettingsFromUI();
         ListView_DeleteAllItems(g_hListEvents);
         g_hookManager.startRecording(g_settings);
@@ -422,7 +569,7 @@ static void OnToggleRecord() {
 
 // Action: Toggle Playback
 static void OnTogglePlay() {
-    if (g_hookManager.isRecording()) return;
+    if (g_hookManager.isRecording() || g_autoRunning) return;
 
     if (g_player.isPlaying()) {
         g_player.stop();
@@ -435,14 +582,16 @@ static void OnTogglePlay() {
         }
 
         SyncSettingsFromUI();
-        UpdateUIState();
+        ShowView(1);
         g_player.play(events, g_settings);
+        UpdateUIState();
     }
 }
 
 // Action: Emergency Stop (Stop key / ESC)
 static void OnEmergencyStop() {
     bool stoppedSomething = false;
+    if (g_autoRunning) { StopAutoClick(); stoppedSomething = true; }
     if (g_hookManager.isRecording()) {
         g_hookManager.stopRecording();
         const auto& evts = g_hookManager.getRecordedEvents();
@@ -471,7 +620,7 @@ static void OnEmergencyStop() {
 
 // Action: Delete Selected Event(s)
 static void OnDeleteSelectedEvents() {
-    if (g_hookManager.isRecording() || g_player.isPlaying()) return;
+    if (g_hookManager.isRecording() || g_player.isPlaying() || g_autoRunning) return;
 
     std::vector<size_t> selectedIndices;
     int item = -1;
@@ -566,7 +715,7 @@ static void OnSaveFile() {
 
 // Action: Clear All
 static void OnClearEvents() {
-    if (g_hookManager.isRecording() || g_player.isPlaying()) return;
+    if (g_hookManager.isRecording() || g_player.isPlaying() || g_autoRunning) return;
 
     if (g_hookManager.getRecordedEvents().empty()) return;
 
@@ -582,234 +731,173 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
             g_hWnd = hWnd;
+            using WindowDpi = UINT (WINAPI*)(HWND);
+            auto windowDpi = reinterpret_cast<WindowDpi>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow"));
+            if (windowDpi) g_dpi = windowDpi(hWnd);
 
-            // Create modern Segoe UI fonts
-            g_hFontNormal = CreateFontW(15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            auto control = [&](const wchar_t* cls, const wchar_t* text, DWORD style,
+                               int x, int y, int w, int h, int id = 0, bool bold = false) {
+                HWND result = CreateWindowW(cls, text, WS_CHILD | WS_VISIBLE | style,
+                    Scale(x), Scale(y), Scale(w), Scale(h), hWnd, (HMENU)(INT_PTR)id, nullptr, nullptr);
+                g_layout.push_back({result, x, y, w, h, bold, g_buildPage});
+                return result;
+            };
+            auto label = [&](const wchar_t* text, int x, int y, int w, bool bold = false) {
+                return control(L"STATIC", text, SS_LEFT, x, y, w, 22, 0, bold);
+            };
+            auto button = [&](const wchar_t* text, int x, int y, int w, int id) {
+                return control(L"BUTTON", text, WS_TABSTOP | BS_PUSHBUTTON, x, y, w, 32, id);
+            };
+            auto edit = [&](const wchar_t* text, int x, int y, int w, int id) {
+                return control(L"EDIT", text, WS_TABSTOP | WS_BORDER | ES_NUMBER | ES_CENTER,
+                    x, y, w, 24, id);
+            };
+            auto combo = [&](int x, int y, int w, int id) {
+                return control(L"COMBOBOX", L"", WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+                    x, y, w, 240, id);
+            };
 
-            g_hFontBold = CreateFontW(15, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                     DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                     CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            HMENU menu = CreateMenu(), files = CreatePopupMenu();
+            AppendMenuW(files, MF_STRING, IDC_BTN_OPEN, L"Mở macro...");
+            AppendMenuW(files, MF_STRING, IDC_BTN_SAVE, L"Lưu macro...");
+            AppendMenuW(files, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(files, MF_STRING, IDC_BTN_DELETE_SEL, L"Xóa sự kiện đã chọn\tDel");
+            AppendMenuW(files, MF_STRING, IDC_BTN_CLEAR, L"Xóa hết sự kiện");
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(files), L"Tệp");
+            AppendMenuW(menu, MF_STRING, IDM_SETTINGS, L"Cài đặt");
+            SetMenu(hWnd, menu);
 
-            g_hFontStatus = CreateFontW(16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                                       CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+            g_buildPage = -1;
+            g_tabs = control(WC_TABCONTROLW, L"", WS_TABSTOP | TCS_BUTTONS | TCS_FIXEDWIDTH,
+                16, 12, 508, 28, IDC_VIEW_TABS);
+            for (auto title : {L"Auto Click", L"Macro"}) {
+                TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<LPWSTR>(title);
+                TabCtrl_InsertItem(g_tabs, TabCtrl_GetItemCount(g_tabs), &item);
+            }
+            g_hBtnStop = button(L"Dừng", 378, 140, 146, IDC_BTN_STOP);
+            g_hStatusLabel = label(L"Sẵn sàng", 16, 190, 508);
+            g_hProgressLabel = label(L"", 16, 214, 508);
 
-            // --- Toolbar Buttons ---
-            g_hBtnRecord = CreateWindowW(L"BUTTON", L"● Bắt đầu Ghi (F8)",
-                                        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                        15, 12, 145, 36, hWnd, (HMENU)IDC_BTN_RECORD, nullptr, nullptr);
+            g_buildPage = 0;
+            label(L"Nút chuột", 16, 58, 110);
+            label(L"Khoảng nghỉ (ms)", 172, 58, 155);
+            label(L"Số click (0 = vô hạn)", 348, 58, 176);
+            g_autoButton = combo(16, 84, 132, IDC_AUTO_BUTTON);
+            for (auto text : {L"Trái", L"Phải", L"Giữa"}) SendMessageW(g_autoButton, CB_ADDSTRING, 0, (LPARAM)text);
+            SendMessage(g_autoButton, CB_SETCURSEL, 0, 0);
+            g_autoInterval = edit(L"100", 172, 84, 152, IDC_AUTO_INTERVAL);
+            g_autoCount = edit(L"0", 348, 84, 176, IDC_AUTO_COUNT);
+            g_autoToggle = button(L"Bắt đầu · F6", 16, 140, 180, IDC_AUTO_TOGGLE);
+            label(L"Click theo con trỏ, bắt đầu sau 1 giây.", 16, 115, 508);
 
-            g_hBtnPlay = CreateWindowW(L"BUTTON", L"▶ Phát Macro (F9)",
-                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      168, 12, 145, 36, hWnd, (HMENU)IDC_BTN_PLAY, nullptr, nullptr);
-
-            g_hBtnStop = CreateWindowW(L"BUTTON", L"⏹ Dừng (ESC)",
-                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      321, 12, 105, 36, hWnd, (HMENU)IDC_BTN_STOP, nullptr, nullptr);
-
-            g_hBtnOpen = CreateWindowW(L"BUTTON", L"📂 Mở File...",
-                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      434, 12, 82, 36, hWnd, (HMENU)IDC_BTN_OPEN, nullptr, nullptr);
-
-            g_hBtnSave = CreateWindowW(L"BUTTON", L"💾 Lưu File...",
-                                      WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      522, 12, 82, 36, hWnd, (HMENU)IDC_BTN_SAVE, nullptr, nullptr);
-
-            g_hBtnDeleteSel = CreateWindowW(L"BUTTON", L"➖ Xóa Chọn",
-                                           WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                           610, 12, 92, 36, hWnd, (HMENU)IDC_BTN_DELETE_SEL, nullptr, nullptr);
-
-            g_hBtnClear = CreateWindowW(L"BUTTON", L"🗑️ Xóa Hết",
-                                       WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                       708, 12, 68, 36, hWnd, (HMENU)IDC_BTN_CLEAR, nullptr, nullptr);
-
-            // --- Panel 1: Settings Group Box ---
-            HWND hGroupSettings = CreateWindowW(L"BUTTON", L" Cấu hình Phát lại & Thu nhận sự kiện ",
-                                               WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-                                               15, 54, 760, 80, hWnd, nullptr, nullptr, nullptr);
-            SetControlFont(hGroupSettings, g_hFontBold);
-
-            // Row 1: Playback Parameters
-            HWND hLblLoop = CreateWindowW(L"STATIC", L"Số vòng (0 = Vô hạn):",
-                                         WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                         30, 75, 145, 20, hWnd, nullptr, nullptr, nullptr);
-            g_hEditLoop = CreateWindowW(L"EDIT", L"0",
-                                       WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER | ES_CENTER,
-                                       180, 73, 50, 22, hWnd, (HMENU)IDC_EDIT_LOOP, nullptr, nullptr);
-
-            HWND hLblSpeed = CreateWindowW(L"STATIC", L"Tốc độ:",
-                                          WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                          248, 75, 50, 20, hWnd, nullptr, nullptr, nullptr);
-            g_hComboSpeed = CreateWindowW(L"COMBOBOX", L"",
-                                         WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                         300, 72, 105, 180, hWnd, (HMENU)IDC_COMBO_SPEED, nullptr, nullptr);
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"0.5x (Chậm)");
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"1.0x (Chuẩn)");
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"1.5x");
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"2.0x (Nhanh)");
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"3.0x");
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"5.0x");
-            SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)L"10.0x");
-            SendMessageW(g_hComboSpeed, CB_SETCURSEL, 1, 0);
-
-            HWND hLblDelay = CreateWindowW(L"STATIC", L"Nghỉ giữa vòng:",
-                                          WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                          420, 75, 95, 20, hWnd, nullptr, nullptr, nullptr);
-            g_hEditDelay = CreateWindowW(L"EDIT", L"500",
-                                        WS_CHILD | WS_VISIBLE | WS_BORDER | ES_NUMBER | ES_CENTER,
-                                        518, 73, 50, 22, hWnd, (HMENU)IDC_EDIT_DELAY, nullptr, nullptr);
-            HWND hLblMs = CreateWindowW(L"STATIC", L"ms",
-                                       WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                       572, 75, 25, 20, hWnd, nullptr, nullptr, nullptr);
-
-            // Row 2: Event Capture Options (Keyboard, Mouse, Moves)
-            g_hChkKeyboard = CreateWindowW(L"BUTTON", L"Thu bàn phím",
-                                          WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                          30, 103, 130, 22, hWnd, (HMENU)IDC_CHK_KEYBOARD, nullptr, nullptr);
-            SendMessage(g_hChkKeyboard, BM_SETCHECK, BST_CHECKED, 0);
-
-            g_hChkMouse = CreateWindowW(L"BUTTON", L"Thu chuột (Click & Cuộn)",
-                                       WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                       175, 103, 195, 22, hWnd, (HMENU)IDC_CHK_MOUSE, nullptr, nullptr);
-            SendMessage(g_hChkMouse, BM_SETCHECK, BST_CHECKED, 0);
-
-            g_hChkMouseMove = CreateWindowW(L"BUTTON", L"Thu di chuyển chuột (Tự lọc khi đứng im)",
-                                           WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-                                           385, 103, 280, 22, hWnd, (HMENU)IDC_CHK_MOUSE_MOVE, nullptr, nullptr);
-            SendMessage(g_hChkMouseMove, BM_SETCHECK, BST_CHECKED, 0);
-
-            // --- Panel 2: Custom Hotkeys Group Box ---
-            HWND hGroupHotkeys = CreateWindowW(L"BUTTON", L" Tùy chỉnh Phím tắt Toàn cục (Global Hotkeys) ",
-                                              WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
-                                              15, 140, 760, 58, hWnd, nullptr, nullptr, nullptr);
-            SetControlFont(hGroupHotkeys, g_hFontBold);
-
-            // Hotkey Record
-            HWND hLblHkRec = CreateWindowW(L"STATIC", L"Phím Ghi:",
-                                          WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                          30, 164, 65, 20, hWnd, nullptr, nullptr, nullptr);
-            g_hComboHkRecord = CreateWindowW(L"COMBOBOX", L"",
-                                            WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                            98, 161, 105, 200, hWnd, (HMENU)IDC_COMBO_HK_RECORD, nullptr, nullptr);
-
-            // Hotkey Play
-            HWND hLblHkPlay = CreateWindowW(L"STATIC", L"Phím Phát:",
-                                           WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                           235, 164, 70, 20, hWnd, nullptr, nullptr, nullptr);
-            g_hComboHkPlay = CreateWindowW(L"COMBOBOX", L"",
-                                          WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                          310, 161, 105, 200, hWnd, (HMENU)IDC_COMBO_HK_PLAY, nullptr, nullptr);
-
-            // Hotkey Stop
-            HWND hLblHkStop = CreateWindowW(L"STATIC", L"Phím Dừng:",
-                                           WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                           445, 164, 75, 20, hWnd, nullptr, nullptr, nullptr);
-            g_hComboHkStop = CreateWindowW(L"COMBOBOX", L"",
-                                          WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
-                                          522, 161, 105, 200, hWnd, (HMENU)IDC_COMBO_HK_STOP, nullptr, nullptr);
-
-            // Populate Hotkey ComboBoxes
-            for (size_t i = 0; i < kHotkeyCount; ++i) {
-                SendMessageW(g_hComboHkRecord, CB_ADDSTRING, 0, (LPARAM)kAvailableHotkeys[i].name);
-                SendMessageW(g_hComboHkPlay, CB_ADDSTRING, 0, (LPARAM)kAvailableHotkeys[i].name);
-                SendMessageW(g_hComboHkStop, CB_ADDSTRING, 0, (LPARAM)kAvailableHotkeys[i].name);
+            g_buildPage = 1;
+            g_hBtnRecord = button(L"Ghi · F8", 16, 52, 158, IDC_BTN_RECORD);
+            g_hBtnPlay = button(L"Phát · F9", 190, 52, 158, IDC_BTN_PLAY);
+            g_hListEvents = control(WC_LISTVIEWW, L"", WS_TABSTOP | LVS_REPORT | WS_VSCROLL,
+                16, 100, 508, 238, IDC_LIST_EVENTS);
+            ListView_SetExtendedListViewStyle(g_hListEvents, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+            ListView_SetBkColor(g_hListEvents, GetSysColor(COLOR_WINDOW));
+            ListView_SetTextBkColor(g_hListEvents, GetSysColor(COLOR_WINDOW));
+            ListView_SetTextColor(g_hListEvents, GetSysColor(COLOR_WINDOWTEXT));
+            const wchar_t* columns[] = {L"#", L"Sự kiện", L"Trễ (ms)", L"Tọa độ / Phím", L"Thời điểm"};
+            const int widths[] = {32, 95, 65, 216, 90};
+            for (int i = 0; i < 5; ++i) {
+                LVCOLUMNW column{}; column.mask = LVCF_TEXT | LVCF_WIDTH;
+                column.pszText = const_cast<LPWSTR>(columns[i]); column.cx = Scale(widths[i]);
+                ListView_InsertColumn(g_hListEvents, i, &column);
             }
 
-            // Defaults: F8, F9, ESC
+            g_buildPage = 2;
+            label(L"Cài đặt macro", 16, 56, 300, true);
+            label(L"Số vòng (0 = vô hạn)", 16, 92, 195);
+            g_hEditLoop = edit(L"0", 230, 88, 110, IDC_EDIT_LOOP);
+            label(L"Tốc độ phát", 16, 126, 195);
+            g_hComboSpeed = combo(230, 122, 110, IDC_COMBO_SPEED);
+            for (auto text : {L"0.5x", L"1.0x", L"1.5x", L"2.0x", L"3.0x", L"5.0x", L"10.0x"})
+                SendMessageW(g_hComboSpeed, CB_ADDSTRING, 0, (LPARAM)text);
+            SendMessage(g_hComboSpeed, CB_SETCURSEL, 1, 0);
+            label(L"Nghỉ giữa vòng (ms)", 16, 160, 195);
+            g_hEditDelay = edit(L"500", 230, 156, 110, IDC_EDIT_DELAY);
+            label(L"Ghi lại", 16, 198, 90);
+            g_hChkKeyboard = control(L"BUTTON", L"Bàn phím", BS_AUTOCHECKBOX | WS_TABSTOP, 112, 194, 110, 24, IDC_CHK_KEYBOARD);
+            g_hChkMouse = control(L"BUTTON", L"Click, cuộn", BS_AUTOCHECKBOX | WS_TABSTOP, 234, 194, 120, 24, IDC_CHK_MOUSE);
+            g_hChkMouseMove = control(L"BUTTON", L"Di chuyển", BS_AUTOCHECKBOX | WS_TABSTOP, 368, 194, 145, 24, IDC_CHK_MOUSE_MOVE);
+            for (HWND item : {g_hChkKeyboard, g_hChkMouse, g_hChkMouseMove}) SendMessage(item, BM_SETCHECK, BST_CHECKED, 0);
+            label(L"Phím tắt", 16, 238, 180, true);
+            label(L"Ghi", 16, 270, 45);
+            g_hComboHkRecord = combo(65, 266, 100, IDC_COMBO_HK_RECORD);
+            label(L"Phát", 188, 270, 45);
+            g_hComboHkPlay = combo(237, 266, 100, IDC_COMBO_HK_PLAY);
+            label(L"Dừng", 360, 270, 45);
+            g_hComboHkStop = combo(409, 266, 115, IDC_COMBO_HK_STOP);
+            for (HWND item : {g_hComboHkRecord, g_hComboHkPlay, g_hComboHkStop})
+                for (const auto& key : kAvailableHotkeys) SendMessageW(item, CB_ADDSTRING, 0, (LPARAM)key.name);
             SendMessage(g_hComboHkRecord, CB_SETCURSEL, FindHotkeyIndex(VK_F8), 0);
             SendMessage(g_hComboHkPlay, CB_SETCURSEL, FindHotkeyIndex(VK_F9), 0);
             SendMessage(g_hComboHkStop, CB_SETCURSEL, FindHotkeyIndex(VK_ESCAPE), 0);
+            label(L"F6 dành riêng cho Auto Click. Thay đổi áp dụng ngay.", 16, 308, 508);
+            button(L"Xong", 404, 354, 120, IDC_SETTINGS_DONE);
 
-            // --- Status Banner ---
-            g_hStatusLabel = CreateWindowW(L"STATIC", L"[SẴN SÀNG] Tổng số sự kiện trong bộ nhớ: 0",
-                                          WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                          15, 204, 760, 22, hWnd, (HMENU)IDC_STATUS_LABEL, nullptr, nullptr);
-
-            g_hProgressLabel = CreateWindowW(L"STATIC", L"Cài đặt: Lặp VÔ HẠN (0) | Tốc độ: 1.0x",
-                                            WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                            15, 226, 760, 20, hWnd, (HMENU)IDC_PROGRESS_LABEL, nullptr, nullptr);
-
-            // --- Event ListView (Table) - Supports Multi-selection ---
-            g_hListEvents = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
-                                           WS_CHILD | WS_VISIBLE | LVS_REPORT | WS_VSCROLL,
-                                           15, 248, 760, 330, hWnd, (HMENU)IDC_LIST_EVENTS, nullptr, nullptr);
-
-            ListView_SetExtendedListViewStyle(g_hListEvents, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
-
-            // Add columns to ListView
-            LVCOLUMNW lvc{};
-            lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
-
-            lvc.pszText = (LPWSTR)L"#";
-            lvc.cx = 45;
-            ListView_InsertColumn(g_hListEvents, 0, &lvc);
-
-            lvc.pszText = (LPWSTR)L"Loại sự kiện";
-            lvc.cx = 125;
-            ListView_InsertColumn(g_hListEvents, 1, &lvc);
-
-            lvc.pszText = (LPWSTR)L"Độ trễ";
-            lvc.cx = 85;
-            ListView_InsertColumn(g_hListEvents, 2, &lvc);
-
-            lvc.pszText = (LPWSTR)L"Chi tiết (Tọa độ / Phím bấm)";
-            lvc.cx = 350;
-            ListView_InsertColumn(g_hListEvents, 3, &lvc);
-
-            lvc.pszText = (LPWSTR)L"Thời điểm";
-            lvc.cx = 135;
-            ListView_InsertColumn(g_hListEvents, 4, &lvc);
-
-            // --- Footer Hint Bar ---
-            g_hFooterHint = CreateWindowW(L"STATIC",
-                                         L"💡 Phím tắt: [F8] Ghi  |  [F9] Phát  |  [ESC] Dừng khẩn cấp  |  [Phím Delete hoặc Nút 'Xóa Chọn'] Xóa mục được chọn",
-                                         WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                         15, 584, 760, 20, hWnd, (HMENU)IDC_FOOTER_HINT, nullptr, nullptr);
-
-            // Apply fonts to all controls
-            SetControlFont(g_hBtnRecord, g_hFontBold);
-            SetControlFont(g_hBtnPlay, g_hFontBold);
-            SetControlFont(g_hBtnStop, g_hFontBold);
-            SetControlFont(g_hBtnOpen, g_hFontNormal);
-            SetControlFont(g_hBtnSave, g_hFontNormal);
-            SetControlFont(g_hBtnDeleteSel, g_hFontBold);
-            SetControlFont(g_hBtnClear, g_hFontNormal);
-
-            SetControlFont(hLblLoop, g_hFontNormal);
-            SetControlFont(g_hEditLoop, g_hFontBold);
-            SetControlFont(hLblSpeed, g_hFontNormal);
-            SetControlFont(g_hComboSpeed, g_hFontNormal);
-            SetControlFont(hLblDelay, g_hFontNormal);
-            SetControlFont(g_hEditDelay, g_hFontNormal);
-            SetControlFont(hLblMs, g_hFontNormal);
-            SetControlFont(g_hChkKeyboard, g_hFontNormal);
-            SetControlFont(g_hChkMouse, g_hFontNormal);
-            SetControlFont(g_hChkMouseMove, g_hFontNormal);
-
-            SetControlFont(hLblHkRec, g_hFontNormal);
-            SetControlFont(g_hComboHkRecord, g_hFontNormal);
-            SetControlFont(hLblHkPlay, g_hFontNormal);
-            SetControlFont(g_hComboHkPlay, g_hFontNormal);
-            SetControlFont(hLblHkStop, g_hFontNormal);
-            SetControlFont(g_hComboHkStop, g_hFontNormal);
-
-            SetControlFont(g_hStatusLabel, g_hFontStatus);
-            SetControlFont(g_hProgressLabel, g_hFontNormal);
-            SetControlFont(g_hListEvents, g_hFontNormal);
-            SetControlFont(g_hFooterHint, g_hFontNormal);
-
+            UpdateFontsAndLayout();
             SyncSettingsFromUI();
+            ShowView(0);
             UpdateUIState();
             return 0;
         }
+
+        case WM_DPICHANGED: {
+            g_dpi = HIWORD(wParam);
+            UpdateFontsAndLayout();
+            const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+            SetWindowPos(hWnd, nullptr, suggested->left, suggested->top,
+                suggested->right - suggested->left, suggested->bottom - suggested->top,
+                SWP_NOZORDER | SWP_NOACTIVATE);
+            ShowView(g_view);
+            return 0;
+        }
+
+        case WM_HOTKEY:
+            if (wParam == kAutoHotkey) ToggleAutoClick();
+            return 0;
+
+        case WM_TIMER:
+            if (wParam == kAutoTimer && g_autoRunning) {
+                if (g_autoClicks == 0) {
+                    uint32_t interval = 100;
+                    ReadAutoNumber(g_autoInterval, 10, interval);
+                    if (!SetTimer(hWnd, kAutoTimer, interval, nullptr)) { StopAutoClick(); return 0; }
+                }
+                INPUT inputs[2]{};
+                inputs[0].type = inputs[1].type = INPUT_MOUSE;
+                inputs[0].mi.dwFlags = g_autoDown;
+                inputs[1].mi.dwFlags = g_autoUp;
+                UINT sent = SendInput(2, inputs, sizeof(INPUT));
+                if (sent != 2) {
+                    if (sent == 1) SendInput(1, &inputs[1], sizeof(INPUT));
+                    StopAutoClick();
+                    MessageBoxW(hWnd, L"Không thể gửi click đến ứng dụng đích.", L"Auto Click", MB_OK | MB_ICONWARNING);
+                    return 0;
+                }
+                ++g_autoClicks;
+                if (g_autoLimit && g_autoClicks >= g_autoLimit) StopAutoClick();
+                else UpdateUIState();
+            }
+            return 0;
 
         case WM_COMMAND: {
             int id = LOWORD(wParam);
             int code = HIWORD(wParam);
 
-            if (id == IDC_BTN_RECORD && code == BN_CLICKED) {
+            if (id == IDM_SETTINGS) {
+                if (g_view != 2) g_previousView = g_view;
+                ShowView(2);
+                UpdateUIState();
+            } else if (id == IDC_SETTINGS_DONE) {
+                ShowView(g_previousView);
+                UpdateUIState();
+            } else if (id == IDC_AUTO_TOGGLE && code == BN_CLICKED) {
+                ToggleAutoClick();
+            } else if (id == IDC_BTN_RECORD && code == BN_CLICKED) {
                 OnToggleRecord();
             } else if (id == IDC_BTN_PLAY && code == BN_CLICKED) {
                 OnTogglePlay();
@@ -835,6 +923,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 
         case WM_NOTIFY: {
             LPNMHDR pnm = reinterpret_cast<LPNMHDR>(lParam);
+            if (pnm && pnm->idFrom == IDC_VIEW_TABS && pnm->code == TCN_SELCHANGE) {
+                ShowView(TabCtrl_GetCurSel(g_tabs));
+                UpdateUIState();
+                return 0;
+            }
             if (pnm && pnm->idFrom == IDC_LIST_EVENTS) {
                 if (pnm->code == LVN_KEYDOWN) {
                     LPNMLVKEYDOWN pnkd = reinterpret_cast<LPNMLVKEYDOWN>(lParam);
@@ -898,9 +991,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
             std::wstring stat;
             std::wstring hkStopName = GetHotkeyName(g_settings.hotkeyStop);
             if (g_settings.loopCount == 0) {
-                stat = L"[▶️ ĐANG PHÁT LẠI...] Vòng lặp: " + std::to_wstring(currentLoop) + L"/Vô hạn  -  Bước: " + std::to_wstring(step) + L"/" + std::to_wstring(total) + L" (Bấm " + hkStopName + L" để dừng)";
+                stat = L"Đang phát  ·  Vòng: " + std::to_wstring(currentLoop) + L"/Vô hạn  -  Bước: " + std::to_wstring(step) + L"/" + std::to_wstring(total) + L" (Bấm " + hkStopName + L" để dừng)";
             } else {
-                stat = L"[▶️ ĐANG PHÁT LẠI...] Vòng lặp: " + std::to_wstring(currentLoop) + L"/" + std::to_wstring(g_settings.loopCount) + L"  -  Bước: " + std::to_wstring(step) + L"/" + std::to_wstring(total);
+                stat = L"Đang phát  ·  Vòng: " + std::to_wstring(currentLoop) + L"/" + std::to_wstring(g_settings.loopCount) + L"  -  Bước: " + std::to_wstring(step) + L"/" + std::to_wstring(total);
             }
             SetWindowTextW(g_hStatusLabel, stat.c_str());
             return 0;
@@ -913,6 +1006,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
         }
 
         case WM_DESTROY: {
+            KillTimer(hWnd, kAutoTimer);
+            UnregisterHotKey(hWnd, kAutoHotkey);
             g_player.stop();
             g_hookManager.shutdown();
 
@@ -931,10 +1026,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
+    // Opt into native DPI rendering even for builds without an embedded manifest.
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    using SetDpiContext = BOOL (WINAPI*)(HANDLE);
+    auto setDpiContext = reinterpret_cast<SetDpiContext>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"));
+    if (setDpiContext) setDpiContext(reinterpret_cast<HANDLE>(-4));
+    else SetProcessDPIAware();
+    HDC screenDC = GetDC(nullptr);
+    if (screenDC) {
+        g_dpi = static_cast<UINT>(GetDeviceCaps(screenDC, LOGPIXELSX));
+        ReleaseDC(nullptr, screenDC);
+    }
+
     // Initialize Windows Common Controls
     INITCOMMONCONTROLSEX icex{};
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
-    icex.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES;
+    icex.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES;
     InitCommonControlsEx(&icex);
 
     // Register Window Class
@@ -945,7 +1052,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     wc.hInstance = hInstance;
     wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hbrBackground = GetSysColorBrush(COLOR_BTNFACE);
     wc.lpszClassName = L"MacroRecorderKWindowClass";
 
     if (!RegisterClassExW(&wc)) {
@@ -954,21 +1061,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
     }
 
     // Window size
-    const int winWidth = 805;
-    const int winHeight = 650;
+    RECT frame{0, 0, Scale(540), Scale(246)};
+    constexpr DWORD windowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    using AdjustForDpi = BOOL (WINAPI*)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    auto adjustForDpi = reinterpret_cast<AdjustForDpi>(GetProcAddress(user32, "AdjustWindowRectExForDpi"));
+    if (adjustForDpi) adjustForDpi(&frame, windowStyle, TRUE, 0, g_dpi);
+    else AdjustWindowRectEx(&frame, windowStyle, TRUE, 0);
 
     // Center window on screen
     int screenW = GetSystemMetrics(SM_CXSCREEN);
     int screenH = GetSystemMetrics(SM_CYSCREEN);
-    int posX = (screenW - winWidth) / 2;
-    int posY = (screenH - winHeight) / 2;
+    int posX = (screenW - (frame.right - frame.left)) / 2;
+    int posY = (screenH - (frame.bottom - frame.top)) / 2;
 
     HWND hWnd = CreateWindowExW(
         0,
         wc.lpszClassName,
-        L"Macro Recorder K - (Win32 High-Precision Edition)",
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
-        posX, posY, winWidth, winHeight,
+        L"Macro K",
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
+        posX, posY, frame.right - frame.left, frame.bottom - frame.top,
         nullptr, nullptr, hInstance, nullptr
     );
 
@@ -1001,14 +1112,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow) {
         MessageBoxW(hWnd, L"Cảnh báo: Không thể khởi tạo Low-Level Hook!", L"Lỗi", MB_OK | MB_ICONWARNING);
     }
 
+    if (!RegisterHotKey(hWnd, kAutoHotkey, MOD_NOREPEAT, VK_F6)) {
+        MessageBoxW(hWnd, L"F6 đang được ứng dụng khác sử dụng. Bạn vẫn có thể bật/tắt Auto Click bằng nút trên giao diện.",
+                    L"Phím tắt Auto Click", MB_OK | MB_ICONWARNING);
+    }
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
     // Main Message Loop
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        if (!IsDialogMessageW(hWnd, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
     }
 
     return (int)msg.wParam;

@@ -25,8 +25,13 @@ if not exist "bin" mkdir bin
 if not exist "macros" mkdir macros
 
 echo [1/4] Compiling Standalone Win32 GUI App (bin\macro_k_gui.exe)...
-g++ -std=c++17 -O2 -mwindows -static -static-libgcc -static-libstdc++ ^
-    src\gui\main_gui.cpp ^
+windres -I . src\gui\resource.rc -O coff -o bin\gui_resources.o
+if %errorlevel% neq 0 (
+    echo [ERROR] Failed to compile GUI resources!
+    exit /b %errorlevel%
+)
+g++ -specs=src\gui\gui.specs -std=c++17 -O2 -mwindows -static -static-libgcc -static-libstdc++ ^
+    src\gui\main_gui.cpp bin\gui_resources.o ^
     src\core\HookManager.cpp ^
     src\core\MacroPlayer.cpp ^
     src\core\MacroStorage.cpp ^

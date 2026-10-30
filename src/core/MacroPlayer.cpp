@@ -15,16 +15,14 @@ bool MacroPlayer::play(const std::vector<MacroEvent>& events, const MacroSetting
         return false;
     }
 
+    // Reap a previous completed worker before starting another playback.
+    if (m_playbackThread.joinable()) m_playbackThread.join();
     m_isPlaying.store(true);
     m_playbackThread = std::thread(&MacroPlayer::playbackWorker, this, events, settings);
     return true;
 }
 
 void MacroPlayer::stop() {
-    if (!m_isPlaying.load()) {
-        return;
-    }
-
     m_isPlaying.store(false);
     if (m_playbackThread.joinable()) {
         m_playbackThread.join();
